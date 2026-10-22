@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Which screensaver component is on: Android 11 needs it outside the :home process (see ScreensaverAlone). -->
+<resources>
+    <bool name="dream_in_home">true</bool>
+    <bool name="dream_alone">false</bool>
+</resources>

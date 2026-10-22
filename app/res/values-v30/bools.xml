@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 only (values-v31 sets it back): the screensaver runs in the main process. -->
+<resources>
+    <bool name="dream_in_home">false</bool>
+    <bool name="dream_alone">true</bool>
+</resources>
