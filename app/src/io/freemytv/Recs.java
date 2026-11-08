@@ -42,6 +42,7 @@ import java.util.concurrent.Executors;
 final class Recs {
     static final class Pick {
         int id;
+        int kwVideoId;          // kino.watch video id: the pick deep-links to this exact title
         String kind;            // "movie" or "tv"
         String title, backdrop, meta = "", app, pkg;
         boolean detailed;
@@ -49,11 +50,37 @@ final class Recs {
 
     interface Listener { void onRecs(); }
 
+    /** "Continue watching" picks from kino.watch (Kinowatch), always first on the home screen. */
+    static final List<Pick> kwPicks = new ArrayList<>();
+
+    /** Recently watched on kino.watch — the "Недавние" tab. */
+    static final List<Pick> kwRecent = new ArrayList<>();
+
+    /** The fourth tab's kind: kino.watch history instead of TMDB trending. */
+    static final String KW_RECENT = "kw:recent";
+
+    /** Kinowatch swaps in fresh continue-watching picks and asks for a re-render. */
+    void setKwPicks(List<Pick> list) {
+        synchronized (kwPicks) {
+            kwPicks.clear();
+            kwPicks.addAll(list);
+        }
+        main.post(() -> { for (Listener l : new ArrayList<>(listeners)) l.onRecs(); });
+    }
+
+    void setKwRecent(List<Pick> list) {
+        synchronized (kwRecent) {
+            kwRecent.clear();
+            kwRecent.addAll(list);
+        }
+        main.post(() -> { for (Listener l : new ArrayList<>(listeners)) l.onRecs(); });
+    }
+
     private static final String API = "https://api.themoviedb.org/3";
     private static final String IMAGES = "https://image.tmdb.org/t/p/original";
-    private static final long LIST_EVERY = 6 * 3600_000L;
+    private static final long LIST_EVERY = 3600_000L;   // user 2026-11-08: hourly cache for all recommendations
     /** Bump when what is saved for each title changes (the saved list is discarded and fetched again). */
-    private static final int CACHE_VERSION = 3;
+    private static final int CACHE_VERSION = 6;
     private static final int MANHA = 0, TARDE = 1, NOITE = 2;
     static final String[] PERIOD_LABEL = {"PARA ESTA MANHÃ", "PARA ESTA TARDE", "PARA ESTA NOITE"};
     static final String[] PERIOD_LABEL_RU = {"ЭТИМ УТРОМ", "СЕГОДНЯ ДНЁМ", "СЕГОДНЯ ВЕЧЕРОМ"};
@@ -172,22 +199,30 @@ final class Recs {
 
     /** This hour's 3, movies only ("movie") or shows only ("tv"); null = both (the home screen tabs). */
     List<Pick> now(String kind) {
+        List<Pick> out = new ArrayList<>();
+        if (KW_RECENT.equals(kind)) {          // the "Недавние" tab: kino.watch history, not TMDB
+            synchronized (kwRecent) { for (Pick p : kwRecent) if (out.size() < 3) out.add(p); }
+            return out;
+        }
+        if (!hasKey(context)) return out;    // no TMDB key: no recommendations
+        // kino.watch lives ONLY in «Недавние» now (user 2026-11-08: "убери недавние из обзора") —
+        // Обзор/Фильмы/Сериалы show pure TMDB trending again.
+        java.util.Set<String> seen = new java.util.HashSet<>();
         List<Pick> list = new ArrayList<>();
-        if (!hasKey(context)) return list;    // no TMDB key: no recommendations
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
         for (Pick p : picks) {
             // RU: no installed app matches TMDB's watch providers, so picks without a pkg are shown too.
             if ((kind == null || kind.equals(p.kind))
                     && (!p.detailed || p.pkg == null || have.computeIfAbsent(p.pkg, this::installed))) list.add(p);
         }
-        if (list.isEmpty()) return list;
-        long hour = System.currentTimeMillis() / 3600_000L;
-        // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
-        List<Pick> out = new ArrayList<>();
-        java.util.Set<String> seen = new java.util.HashSet<>();
-        for (int i = 0; i < list.size() && out.size() < 3; i++) {
-            Pick p = list.get((int) ((hour * 3 + i) % list.size()));
-            if (seen.add(franchise(p.title))) out.add(p);
+        if (!list.isEmpty()) {
+            long hour = System.currentTimeMillis() / 3600_000L;
+            // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
+            java.util.Set<String> franchises = new java.util.HashSet<>();
+            for (int i = 0; i < list.size() && out.size() < 3; i++) {
+                Pick p = list.get((int) ((hour * 3 + i) % list.size()));
+                if (seen.add(key(p)) && franchises.add(franchise(p.title))) out.add(p);
+            }
         }
         return out;
     }
@@ -217,6 +252,8 @@ final class Recs {
         io.execute(() -> {
             try {
                 loadImage(p);
+            } catch (Exception e) {
+                AppLog.w("backdrop fail \u201c" + p.title + "\u201d: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
             } finally {
                 synchronized (images) { pending.remove(key); }
             }
@@ -226,6 +263,16 @@ final class Recs {
 
     private boolean hasImage(Pick p) {
         return p.backdrop != null && imageFile(p).exists();
+    }
+
+    /** Kinowatch: fetch the pick's image to disk if missing (files survive restarts) — the caller swaps the
+     *  cards only after this, so new items arrive WITH their pictures, never as gray placeholders. */
+    void ensureDownloaded(Pick p) {
+        try {
+            if (p.backdrop != null && p.backdrop.startsWith("http")) download(p);
+        } catch (Exception e) {
+            AppLog.w("kw: still fail \u201c" + p.title + "\u201d: " + (e.getMessage() == null ? e.toString() : e.getMessage()));
+        }
     }
 
     private File imageFile(Pick p) {
@@ -356,7 +403,7 @@ final class Recs {
     List<Pick> wanted() {
         List<Pick> out = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        for (String kind : new String[] {null, "movie", "tv"}) {
+        for (String kind : new String[] {null, "movie", "tv", KW_RECENT}) {
             for (Pick p : now(kind)) if (seen.add(key(p))) out.add(p);
         }
         return out;
@@ -364,7 +411,7 @@ final class Recs {
 
     /** Movies and shows are numbered separately on TMDB: a pick is identified by type + number. */
     static String key(Pick p) {
-        return p.kind + ":" + p.id;
+        return p.kwVideoId > 0 ? "kw:" + p.kwVideoId : p.kind + ":" + p.id;
     }
 
     private void notifyListeners() {
@@ -491,6 +538,37 @@ final class Recs {
         JSONObject wp = o.optJSONObject("watch/providers");
         // RU: TMDB has no watch providers matching the TV's apps, so clicks open the user's preferred app.
         if (p.pkg == null) p.pkg = PREFERRED_APP;
+        // …and with the Kinowatch token we can do better than the app's root screen: find this title in
+        // the kino.watch catalog and deep-link its exact item page (year disambiguates remakes).
+        if (PREFERRED_APP.equals(p.pkg) && p.kwVideoId == 0 && Kinowatch.activated()) {
+            String date = o.optString(p.kind.equals("movie") ? "release_date" : "first_air_date");
+            int year = date.length() >= 4 ? Integer.parseInt(date.substring(0, 4)) : 0;
+            try {
+                String query = p.title.split(" / ")[0];
+                JSONObject raw = Kinowatch.searchRaw(query);
+                JSONArray found = raw.optJSONArray("items");
+                if (found == null) found = raw.optJSONArray("results");
+                // STRICT match: the catalog item's title must EQUAL the pick's title (year only breaks ties
+                // among equally-named items). Year-alone matching is a leak: the API's search has broken days
+                // when ANY query returns one same-year popular item (seen 2026-11-08: every title "found"
+                // id 128782), and trending picks are mostly current-year too.
+                int id = 0, idYear = 0;
+                for (int i = 0; found != null && i < found.length(); i++) {
+                    JSONObject it = found.optJSONObject(i);
+                    if (it == null || it.optInt("id") <= 0) continue;
+                    String t = it.optString("title", "").split(" / ")[0].trim();
+                    if (!t.equalsIgnoreCase(query.trim())) continue;
+                    if (id == 0) id = it.optInt("id");
+                    if (year > 0 && it.optInt("year") == year) { idYear = it.optInt("id"); break; }
+                }
+                p.kwVideoId = idYear != 0 ? idYear : id;
+                if (p.kwVideoId != 0) AppLog.w("kw: link \u201c" + p.title + "\u201d \u2192 " + p.kwVideoId);
+                else AppLog.w("kw: no title match \u201c" + p.title + "\u201d: " + raw.toString().substring(0, Math.min(160, raw.toString().length())));
+            } catch (Exception e) {
+                AppLog.w("kw: link fail \u201c" + p.title + "\u201d: "
+                        + (e.getMessage() == null ? e.toString() : e.getMessage()));
+            }
+        }
         JSONObject br = wp == null ? null : wp.optJSONObject("results") == null ? null : wp.optJSONObject("results").optJSONObject(REGION);
         JSONArray flat = br == null ? null : br.optJSONArray("flatrate");
         for (int i = 0; flat != null && i < flat.length() && p.app == null; i++) {
@@ -618,7 +696,8 @@ final class Recs {
         //noinspection ResultOfMethodCallIgnored
         f.getParentFile().mkdirs();
         File part = new File(f.getPath() + ".part");
-        HttpURLConnection c = (HttpURLConnection) new URL(IMAGES + p.backdrop).openConnection();
+        String url = p.backdrop.startsWith("http") ? p.backdrop : IMAGES + p.backdrop;
+        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(8000);
         c.setReadTimeout(20000);
         try (InputStream in = c.getInputStream(); FileOutputStream out = new FileOutputStream(part)) {
@@ -658,7 +737,9 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 10 : 4)) images.remove(images.keySet().iterator().next());
+                // wanted() can hold up to 12 picks now (3 tabs × 3 TMDB + 3 kino.watch «Недавние»):
+                // a 10-entry cache thrashed — cards kept evicting each other's bitmaps and went gray.
+                while (images.size() > (forLight ? 14 : 4)) images.remove(images.keySet().iterator().next());
             }
             notifyListeners();
         } catch (IOException | RuntimeException | OutOfMemoryError e) {
@@ -702,7 +783,7 @@ final class Recs {
             for (Pick p : picks) {
                 a.put(new JSONObject().put("id", p.id).put("kind", p.kind).put("title", p.title).put("backdrop", p.backdrop)
                         .put("meta", p.meta).put("app", p.app == null ? "" : p.app).put("pkg", p.pkg == null ? "" : p.pkg)
-                        .put("detailed", p.detailed));
+                        .put("detailed", p.detailed).put("kw", p.kwVideoId));
             }
             cache.edit().putString("picks", a.toString()).putInt("period", period).putLong("listAt", listAt)
                     .putString("language", listLanguage)
@@ -724,6 +805,7 @@ final class Recs {
             p.meta = o.optString("meta");
             p.app = o.optString("app").isEmpty() ? null : o.optString("app");
             p.pkg = o.optString("pkg").isEmpty() ? null : o.optString("pkg");
+            p.kwVideoId = o.optInt("kw");
             p.detailed = o.optBoolean("detailed");
             out.add(p);
         }

@@ -39,6 +39,29 @@ final class Prefs {
         Ui.applyLanguage();   // the language picked on the TV, now that it can be read
     }
 
+    // MARK: - kino.watch tokens (Kinowatch). No version bump: these must not redraw the whole screen.
+
+    static String kw(String key) {
+        return app == null ? "" : sp().getString("kw_" + key, "");
+    }
+
+    static void kwPut(String key, String value) {
+        if (app != null) sp().edit().putString("kw_" + key, value).apply();
+    }
+
+    static long kwLong(String key) {
+        String v = kw(key);
+        try {
+            return Long.parseLong(v);
+        } catch (NumberFormatException e) {
+            return 0;
+        }
+    }
+
+    static void kwPutLong(String key, long value) {
+        kwPut(key, String.valueOf(value));
+    }
+
     private static SharedPreferences sp() {
         return app.getSharedPreferences("settings", Context.MODE_PRIVATE);
     }

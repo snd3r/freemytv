@@ -27,7 +27,7 @@ final class Russian {
             case "Sunset ": return "Закат ";
             case "Crypto": return "Криптовалюты";
             case "24h change": return "изменение за 24 ч";
-            case "For You": return "Для вас";
+            case "For You": return "Телепередача";
             case "← → to move · OK to drop · Back to cancel": return "← → — переместить · OK — оставить · Назад — отмена";
             case "Moving ": return "Перемещение: ";
             case ", position ": return ", место ";
