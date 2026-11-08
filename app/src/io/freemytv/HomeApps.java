@@ -54,7 +54,7 @@ import java.util.regex.Pattern;
 final class HomeApps {
     private HomeApps() {}
 
-    static final int APP = 0, LIVE_TV = 1, INPUT = 2, ALL_APPS = 3, SETTINGS = 4, ANDROID_SETTINGS = 5;
+    static final int APP = 0, LIVE_TV = 1, INPUT = 2, ALL_APPS = 3, SETTINGS = 4, ANDROID_SETTINGS = 5, HISTORY = 6;
     /** The "HDMI Inputs" button: opens the bottom drawer on the inputs (the home screen handles it). */
     static final int INPUTS = 7;
     /** Image size of each card (16:9; on screen it shows up to ~330 px wide). */
@@ -218,6 +218,7 @@ final class HomeApps {
     /** Shortcuts in the bottom drawer. */
     static List<Item> drawerShortcuts() {
         List<Item> items = new ArrayList<>();
+        items.add(shortcut(HISTORY, "kwhistory", Ui.tr("Continuar assistindo", "Продолжить"), "play"));
         items.add(shortcut(ALL_APPS, "all", Ui.tr("Todos os Apps", "All Apps"), "apps"));
         items.add(shortcut(SETTINGS, "settings", Ui.tr("Ajustes do Início", "Home Settings"), "settings"));
         items.add(shortcut(ANDROID_SETTINGS, "tv-settings", Ui.tr("Ajustes da TV", "TV Settings"), "tv_settings"));
@@ -380,6 +381,20 @@ final class HomeApps {
                 break;
             case ANDROID_SETTINGS:
                 intent = new Intent(Settings.ACTION_SETTINGS);
+                break;
+            case HISTORY:
+                // kino.watch's Continue Watching screen. HistoryActivity is not exported, so try it first and
+                // fall back to InfoActivity's history action if this build blocks the direct launch.
+                try {
+                    Intent hi = new Intent().setClassName("watch.kino", "watch.kino.history.HistoryActivity");
+                    hi.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    a.startActivity(hi, ActivityOptions.makeScaleUpAnimation(from, x, y, Math.max(w, 1), Math.max(h, 1)).toBundle());
+                    return true;
+                } catch (Exception e) {
+                    Intent fb = new Intent("android.intent.action.SEARCH").setClassName("watch.kino", "watch.kino.activity.InfoActivity");
+                    fb.putExtra("action", "history");
+                    intent = fb;
+                }
                 break;
             default:
                 return false;
