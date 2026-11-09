@@ -2710,9 +2710,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (HomeData.coinCount() > 0) drawQuotes(c);
             return;
         }
-        // The wall clock in the same title style: «23:40 · Телепередача» (user 2026-11-09).
+        // The wall clock in the same title style: «23:40 Телепередача» (user 2026-11-09: plain space).
         String hello = new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(new java.util.Date())
-                + " · " + Ui.tr("Para você", "For You");
+                + " " + Ui.tr("Para você", "For You");
         c.drawText(hello, MARGIN * k - Ui.leftBearing(lTitle, hello), L_TITLE_BASE * k, lTitle);
         // Text tabs (the selected one in bold, in the main text color); with focus on the tabs, the selected one gets
         // the white pill with a shadow and grows a little (the tvOS focus).
