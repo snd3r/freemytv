@@ -2881,17 +2881,19 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     cardIndex = nearest(cardRects, cards.size(), tileRects[shelfIndex].centerX());
                 }
                 break;
-            case Z_CARDS:
-                if (dx > 0 && cardIndex >= cards.size() - 1 && tab < 3) {
-                    // Past the last card: the next tab's first card (Обзор → Фильмы → Сериалы → Недавние).
-                    selectTab(tab + 1);
-                    cardIndex = 0;
-                    click.move();
-                    return true;
-                }
-                if (dx != 0) {
-                    int next = Math.max(0, Math.min(cards.size() - 1, cardIndex + dx));
-                    if (next == cardIndex) return true;
+            case Z_CARDS: {
+                boolean nextTab = dx > 0 && cardIndex >= cards.size() - 1 && tab < 3;
+                boolean prevTab = dx < 0 && cardIndex == 0 && tab > 0;
+                if (nextTab || prevTab) {
+                    // Past an edge card: hop to the neighboring tab — next tab's FIRST card going right,
+                    // previous tab's LAST card going back (Обзор ⇄ Фильмы ⇄ Сериалы ⇄ Недавние). No early
+                    // return here: the shared retarget below must re-aim the springs, or the old card
+                    // stays visually enlarged while the focus has already moved (seen on the TV).
+                    selectTab(nextTab ? tab + 1 : tab - 1);
+                    cardIndex = nextTab ? 0 : Math.max(0, cards.size() - 1);
+                } else if (dx != 0) {
+                    int next = cardIndex + dx;
+                    if (next < 0 || next >= cards.size()) return true;
                     cardIndex = next;
                 } else if (dy < 0) {
                     zone = Z_TOP;
@@ -2901,6 +2903,7 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                     if (!shelf.isEmpty()) shelfIndex = nearest(tileRects, tileRects.length, cardRects[cardIndex].centerX());
                 }
                 break;
+            }
             case Z_TOP:
                 if (dx != 0) {
                     int next = Math.max(picksOn() ? 0 : 4, Math.min(6, topIndex + dx));
