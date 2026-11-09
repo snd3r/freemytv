@@ -210,7 +210,10 @@ final class Recs {
         if (!hasKey(context)) return out;    // no TMDB key: no recommendations
         // kino.watch lives ONLY in «Недавние» now (user 2026-11-08: "убери недавние из обзора") —
         // Обзор/Фильмы/Сериалы show pure TMDB trending again.
-        java.util.Set<String> seen = new java.util.HashSet<>();
+        // Movies and shows skip whatever Обзор is showing this hour (user 2026-11-09: no repeats across
+        // tabs "when there is something else to show") — computed from the same rotation, stateless.
+        java.util.Set<String> taken = new java.util.HashSet<>();
+        if (kind != null) for (Pick p : now(null)) taken.add(key(p));
         List<Pick> list = new ArrayList<>();
         Map<String, Boolean> have = new HashMap<>();   // one look per app, not per title (this runs every 15 s)
         for (Pick p : picks) {
@@ -221,9 +224,16 @@ final class Recs {
         if (!list.isEmpty()) {
             long hour = System.currentTimeMillis() / 3600_000L;
             // Three per hour, never two from the same franchise ("Law & Order" and "Law & Order: Special…").
+            java.util.Set<String> seen = new java.util.HashSet<>();
             java.util.Set<String> franchises = new java.util.HashSet<>();
+            List<Pick> usedUp = new ArrayList<>();         // the picks Обзор took: fallback fill if short
             for (int i = 0; i < list.size() && out.size() < 3; i++) {
                 Pick p = list.get((int) ((hour * 3 + i) % list.size()));
+                if (taken.contains(key(p))) { usedUp.add(p); continue; }
+                if (seen.add(key(p)) && franchises.add(franchise(p.title))) out.add(p);
+            }
+            for (Pick p : usedUp) {                        // tiny pool: better a repeat than an empty slot
+                if (out.size() >= 3) break;
                 if (seen.add(key(p)) && franchises.add(franchise(p.title))) out.add(p);
             }
         }
@@ -471,8 +481,8 @@ final class Recs {
         AppLog.w("recs: trending movies=" + hotMovies.size() + " shows=" + hotShows.size());
         List<Pick> list = new ArrayList<>();
         java.util.Set<String> seen = new java.util.HashSet<>();
-        alternate(list, seen, hotMovies, hotShows, 24);
-        alternate(list, seen, newMovies, newShows, 24);
+        alternate(list, seen, hotMovies, hotShows, 36);
+        alternate(list, seen, newMovies, newShows, 36);
         if (list.isEmpty()) throw new IOException("TMDB returned no recommendations");
         picks = list;
         period = p;
