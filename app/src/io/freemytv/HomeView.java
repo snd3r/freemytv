@@ -1147,16 +1147,8 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
 
     /** Shelf layer: the glass bar and its shadow (it only changes with the background). */
     private void drawPlatter(Canvas c) {
-        if (shelf.isEmpty()) return;
-        float radius = (TILE_RADIUS + SHELF_PAD) * k;
-        tmp.set(platterRect);
-        tmp.offset(0, 18 * k);
-        shadow.setColor(tone(0x1F000000, 0x52000000));
-        shadows.draw(c, tmp, radius, SHADOW_BLUR * k, shadow);
-        // Flat gray panel (user preference): no glass, no outline.
-        tileFill.setShader(null);
-        tileFill.setColor(tone(0xFF222226, 0xFF16161A));
-        c.drawRoundRect(platterRect, radius, radius, tileFill);
+        // No backing panel (user 2026-11-09: youtube/kinopoisk "на фоне просто без подложек") — every
+        // shelf tile draws its own banner full-bleed, so the bar was only visible as padding around them.
     }
 
     /** The quotes row's text and sizes, for one set of coins, prices and text size. */
@@ -2718,7 +2710,9 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
             if (HomeData.coinCount() > 0) drawQuotes(c);
             return;
         }
-        String hello = Ui.tr("Para você", "For You");
+        // The wall clock in the same title style: «23:40 · Телепередача» (user 2026-11-09).
+        String hello = new java.text.SimpleDateFormat("HH:mm", java.util.Locale.US).format(new java.util.Date())
+                + " · " + Ui.tr("Para você", "For You");
         c.drawText(hello, MARGIN * k - Ui.leftBearing(lTitle, hello), L_TITLE_BASE * k, lTitle);
         // Text tabs (the selected one in bold, in the main text color); with focus on the tabs, the selected one gets
         // the white pill with a shadow and grows a little (the tvOS focus).
@@ -2888,6 +2882,13 @@ final class HomeView extends ViewGroup implements Choreographer.FrameCallback, H
                 }
                 break;
             case Z_CARDS:
+                if (dx > 0 && cardIndex >= cards.size() - 1 && tab < 3) {
+                    // Past the last card: the next tab's first card (Обзор → Фильмы → Сериалы → Недавние).
+                    selectTab(tab + 1);
+                    cardIndex = 0;
+                    click.move();
+                    return true;
+                }
                 if (dx != 0) {
                     int next = Math.max(0, Math.min(cards.size() - 1, cardIndex + dx));
                     if (next == cardIndex) return true;

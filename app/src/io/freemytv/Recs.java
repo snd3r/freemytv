@@ -135,6 +135,9 @@ final class Recs {
     private volatile String error = "";
     private volatile boolean light;     // light design: builds only the cards (all three tabs' cards fit in memory)
     private volatile long failedAt, keyStamp;
+    /** A DNS/timeout blip recovers in seconds: after one, the retry lock is 1 min, not the 10-min
+     *  parse-failure lock — otherwise posters stay gray long after the network is back (seen live). */
+    private volatile boolean transientFailure;
     private volatile String listLanguage = "";   // language used for the saved titles, genres and texts
 
     private Recs(Context c) {
@@ -286,7 +289,8 @@ final class Recs {
         long stamp = sourceStamp();   // a new key, country or installed streaming-app set refetches
         boolean newKey = stamp != keyStamp;
         long sinceFail = now - failedAt;    // negative = the clock went back: don't wait
-        if (!newKey && failedAt != 0 && sinceFail >= 0 && sinceFail < 10 * 60_000L) return;
+        long lock = transientFailure ? 60_000L : 10 * 60_000L;
+        if (!newKey && failedAt != 0 && sinceFail >= 0 && sinceFail < lock) return;
         int p = period(now);
         boolean stale = newKey || p != period || now - listAt > LIST_EVERY || now < listAt || picks.isEmpty()
                 || !listLanguage.equals(Ui.language);
@@ -319,6 +323,9 @@ final class Recs {
                 failedAt = 0;
             } catch (Exception e) {
                 error = e.getMessage() == null ? e.toString() : e.getMessage();
+                String m = error.toLowerCase(java.util.Locale.ROOT);
+                transientFailure = m.contains("resolve host") || m.contains("timeout")
+                        || m.contains("connection") || m.contains("unreachable") || m.contains("econn");
                 failedAt = System.currentTimeMillis();
                 AppLog.w("recommendations: " + error);
             } finally {
