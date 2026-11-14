@@ -46,8 +46,8 @@ final class Kinowatch {
     static volatile Runnable onUpdate;
 
     private static Context app;
-    private static boolean polling, fetching;
-    private static long lastPoll, lastCodeAttempt, lastAttempt;
+    private static boolean polling, fetching, listsFetching;
+    private static long lastPoll, lastCodeAttempt, lastAttempt, lastListAttempt;
 
     static void init(Context c) {
         if (app != null) return;
@@ -62,7 +62,9 @@ final class Kinowatch {
         if (Prefs.kw("refresh_token").isEmpty() && !Config.KW_REFRESH_TOKEN.isEmpty())
             Prefs.kwPut("refresh_token", Config.KW_REFRESH_TOKEN);
         loadCache();   // last good lists at once — cards never wait for the API
+        loadLists();
         MAIN.postDelayed(Kinowatch::tick, 4000);
+        IO.execute(() -> guard(Kinowatch::fetchLists));   // fresh lists at every boot (one query per tab)
         IO.execute(() -> guard(Kinowatch::fetchHistory));   // fresh history at every boot: the shared
         // history_at may have been stamped moments ago by a previous process, and waiting a full
         // HISTORY_EVERY after a reinstall (or TV restart) shows stale "continue watching".
@@ -103,6 +105,13 @@ final class Kinowatch {
                 lastAttempt = now;
                 IO.execute(() -> guard(Kinowatch::fetchHistory));   // empty in THIS process (boot, or the
                 // fetch failed): keep retrying — history_at may be fresh from a previous process' run
+            }
+            // The catalog lists («Горячее» etc.) — the tab triples since the TMDB retirement. Hourly, same
+            // retry gate: one straight query per list, no search, no resolver.
+            if ((Recs.listsEmpty() || now - Prefs.kwLong("lists_at") > HISTORY_EVERY)
+                    && now - lastListAttempt > RETRY_EVERY) {
+                lastListAttempt = now;
+                IO.execute(() -> guard(Kinowatch::fetchLists));
             }
             return;
         }
@@ -167,10 +176,21 @@ final class Kinowatch {
 
     private static void refreshTokens() throws Exception {
         String rt = Prefs.kw("refresh_token");
+        if (rt.isEmpty()) throw new IOException("no refresh token");
         JSONObject o = post(OAUTH_TOKEN, "grant_type=refresh_token&client_id=" + CLIENT_ID
                 + "&client_secret=" + CLIENT_SECRET + "&refresh_token=" + rt);
         storeTokens(o);
         AppLog.w("kw: token refreshed");
+    }
+
+    /** The server rejected the refresh token (session invalidated — e.g. another device activated):
+     *  forget the auth so tick() falls back to the activation flow and the tile shows a fresh code. */
+    private static void authDead() {
+        Prefs.kwPut("refresh_token", "");
+        Prefs.kwPut("access_token", "");
+        Prefs.kwPut("device_code", "");
+        Prefs.kwPutLong("code_at", 0);
+        bump();
     }
 
     private static void storeTokens(JSONObject o) throws Exception {
@@ -181,8 +201,14 @@ final class Kinowatch {
     }
 
     private static void ensureAccess() throws Exception {
-        if (Prefs.kw("access_token").isEmpty() || System.currentTimeMillis() > Prefs.kwLong("access_expire"))
-            refreshTokens();
+        if (Prefs.kw("access_token").isEmpty() || System.currentTimeMillis() > Prefs.kwLong("access_expire")) {
+            try {
+                refreshTokens();
+            } catch (Exception e) {
+                if (String.valueOf(e.getMessage()).contains("invalid_refresh_token")) authDead();
+                throw e;
+            }
+        }
     }
 
     // MARK: - data
@@ -190,6 +216,92 @@ final class Kinowatch {
     /** History → the home screen: "continue" (unfinished) leads every tab, "recent" fills the Недавние tab.
      *  ATOMIC: the visible cards change only when new items AND their images are on disk — the API's bad
      *  days must never blank or gray the row (user 2026-11-08). */
+    // MARK: - catalog lists («Горячее» etc.): the home screen's tab triples
+
+    /** items/hot per type, 5 per tab; the explore tab mixes the two (3 movies + 2 shows, interleaved). */
+    private static void fetchLists() throws Exception {
+        if (listsFetching) return;
+        listsFetching = true;
+        lastListAttempt = System.currentTimeMillis();
+        try {
+            ensureAccess();
+            List<Recs.Pick> movies = parseList(get("items/hot?type=movie"));
+            List<Recs.Pick> shows = parseList(get("items/hot?type=serial"));
+            if (movies.isEmpty() && shows.isEmpty()) {
+                AppLog.w("kw: lists came back empty — keeping the cards as they are: " + preview(new JSONObject()));
+                return;
+            }
+            List<Recs.Pick> explore = new ArrayList<>();
+            for (int i = 0; explore.size() < 5 && (i < movies.size() || i < shows.size()); i++) {
+                if (i < movies.size()) explore.add(movies.get(i));
+                if (explore.size() < 5 && i < shows.size()) explore.add(shows.get(i));
+            }
+            // Горячее takes the first of each; the tabs must not repeat it (user 2026-11-13 — same rule
+            // the TMDB tabs lived by). The hot lists are 20 deep, there is always more to show.
+            java.util.Set<Integer> taken = new java.util.HashSet<>();
+            for (Recs.Pick p : explore) taken.add(p.kwVideoId);
+            movies.removeIf(p -> taken.contains(p.kwVideoId));
+            shows.removeIf(p -> taken.contains(p.kwVideoId));
+            try {
+                JSONObject pack = new JSONObject()
+                        .put("explore", toJson(explore)).put("movies", toJson(movies)).put("shows", toJson(shows));
+                Prefs.kwPut("lists", pack.toString());
+            } catch (Exception ignored) {
+            }
+            Prefs.kwPutLong("lists_at", System.currentTimeMillis());
+            Recs.get(app).setLists(explore, movies, shows);
+            AppLog.w("kw: lists movies=" + movies.size() + " shows=" + shows.size());
+        } finally {
+            listsFetching = false;
+        }
+    }
+
+    private static void loadLists() {
+        try {
+            JSONObject pack = new JSONObject(Prefs.kw("lists"));
+            List<Recs.Pick> explore = fromJson(pack.optJSONArray("explore"));
+            List<Recs.Pick> movies = fromJson(pack.optJSONArray("movies"));
+            List<Recs.Pick> shows = fromJson(pack.optJSONArray("shows"));
+            if (explore.isEmpty() && movies.isEmpty() && shows.isEmpty()) return;
+            Recs.get(app).setLists(explore, movies, shows);
+            AppLog.w("kw: lists restored movies=" + movies.size() + " shows=" + shows.size());
+        } catch (Exception ignored) {
+        }
+    }
+
+    /** items/hot entries → picks: the id IS the deep link, the poster is the card image. */
+    private static List<Recs.Pick> parseList(JSONObject o) {
+        List<Recs.Pick> out = new ArrayList<>();
+        JSONArray items = o.optJSONArray("items");
+        // 20 deep, not 5: Горячее takes the first few, and the tabs must still have a full five after
+        // the explore titles are subtracted (seen live 2026-11-13: 5-cap left movies=2 shows=3).
+        for (int i = 0; items != null && i < items.length() && out.size() < 20; i++) {
+            JSONObject it = items.optJSONObject(i);
+            if (it == null || it.optInt("id") <= 0) continue;
+            Recs.Pick p = new Recs.Pick();
+            p.kwVideoId = it.optInt("id");
+            p.kind = "serial".equals(it.optString("type")) ? "tv" : "movie";
+            p.title = it.optString("title", "kino.watch").split(" / ")[0].trim();
+            JSONObject posters = it.optJSONObject("posters");
+            p.backdrop = bestPoster(posters);   // big: the cards render at 336×464, medium is soft
+            p.meta = it.optInt("year", 0) > 0 ? String.valueOf(it.optInt("year")) : "";
+            p.pkg = "watch.kino";
+            p.detailed = true;
+            out.add(p);
+        }
+        return out;
+    }
+
+    /** The largest poster the API offers: big → medium → small (the cards are portrait now). */
+    private static String bestPoster(JSONObject posters) {
+        if (posters == null) return "";
+        for (String k : new String[] {"big", "medium", "small"}) {
+            String u = posters.optString(k, "");
+            if (u.startsWith("http")) return u;
+        }
+        return "";
+    }
+
     private static void fetchHistory() throws Exception {
         if (fetching) return;
         fetching = true;
@@ -280,11 +392,8 @@ final class Kinowatch {
             String type = it.optString("type", "movie");
             p.kind = "tv".equals(type) || "serial".equals(type) ? "tv" : "movie";
             p.title = it.optString("title", "kino.watch");
-            p.backdrop = media == null ? "" : media.optString("thumbnail", "");
-            if (!p.backdrop.startsWith("http")) {
-                JSONObject posters = it.optJSONObject("posters");
-                p.backdrop = posters == null ? "" : posters.optString("medium", posters.optString("small", ""));
-            }
+            p.backdrop = bestPoster(it.optJSONObject("posters"));   // hi-res portrait card art
+            if (!p.backdrop.startsWith("http")) p.backdrop = media == null ? "" : media.optString("thumbnail", "");
             String ep = media != null && media.optInt("snumber", 0) > 0
                     ? "S" + media.optInt("snumber") + "E" + media.optInt("number", 0) : "";
             long time = h.optLong("time", 0);
@@ -327,6 +436,24 @@ final class Kinowatch {
     private static final String PREFERRED_APP = "watch.kino";
 
     private static JSONObject get(String path) throws Exception {
+        JSONObject out = attempt(path);
+        // The server can kill an access token before its expires_in (seen 2026-11-13: 401s while the pref
+        // said the token lived another day). One forced rotation + retry — the refresh token is the truth.
+        if (out == null) {
+            AppLog.w("kw: 401 — forcing a token refresh");
+            try {
+                refreshTokens();
+            } catch (Exception e) {
+                if (String.valueOf(e.getMessage()).contains("invalid_refresh_token")) authDead();
+                throw e;
+            }
+            out = attempt(path);
+        }
+        return out;
+    }
+
+    /** One authorized GET; null means 401 (the caller decides whether to rotate and retry). */
+    private static JSONObject attempt(String path) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(API + path).openConnection();
         c.setConnectTimeout(10_000);
         c.setReadTimeout(25_000);   // api.srvkp.com has slow spells (seen 3–9 s replies; 8 s timed out on the TV)
@@ -335,6 +462,7 @@ final class Kinowatch {
         c.setRequestProperty("Accept", "application/json");
         int code = c.getResponseCode();
         String body = read(code >= 400 ? c.getErrorStream() : c.getInputStream());
+        if (code == 401) return null;
         if (code != 200) throw new IOException("kw HTTP " + code + ": " + body.substring(0, Math.min(400, body.length())));
         return new JSONObject(body);
     }
