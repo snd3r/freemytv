@@ -144,8 +144,8 @@ final class Recs {
         synchronized (listExplore) { out.addAll(listExplore); }
         synchronized (listMovies) { out.addAll(listMovies); }
         synchronized (listShows) { out.addAll(listShows); }
-        synchronized (kwPicks) { out.addAll(kwPicks); }
-        synchronized (kwRecent) { out.addAll(kwRecent); }
+        synchronized (kwRecent) { out.addAll(kwRecent); }   // kwPicks (continue) is not on the screen —
+        // warming it alongside would thrash the bitmap cache (seen as gray cards after the screensaver)
         return out;
     }
 
@@ -373,7 +373,7 @@ final class Recs {
             if (forLight != light) return;   // the design changed midway: this one is stale
             synchronized (images) {
                 images.put(p.backdrop, backdrop);
-                while (images.size() > (forLight ? 20 : 4)) images.remove(images.keySet().iterator().next());
+                while (images.size() > (forLight ? 22 : 4)) images.remove(images.keySet().iterator().next());
             }
         } catch (Exception e) {
             //noinspection ResultOfMethodCallIgnored

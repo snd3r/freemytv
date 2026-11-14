@@ -242,6 +242,10 @@ final class Kinowatch {
             for (Recs.Pick p : explore) taken.add(p.kwVideoId);
             movies.removeIf(p -> taken.contains(p.kwVideoId));
             shows.removeIf(p -> taken.contains(p.kwVideoId));
+            // Keep only what the screen shows: deeper entries once lived here for "variety", but the
+            // screensaver's prefetchAll warmed ALL of them and thrashed the bitmap cache — gray cards.
+            while (movies.size() > 5) movies.remove(movies.size() - 1);
+            while (shows.size() > 5) shows.remove(shows.size() - 1);
             try {
                 JSONObject pack = new JSONObject()
                         .put("explore", toJson(explore)).put("movies", toJson(movies)).put("shows", toJson(shows));
